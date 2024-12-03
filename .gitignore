@@ -1,0 +1,25 @@
+# Ignore everything by default
+*
+
+# Allow my project directory
+!exts/
+
+# Ignore all subdirectories inside 'exts'
+exts/*
+
+# Allow specific folders within the project
+!exts/omni.isaac.cortex/
+!exts/omni.isaac.cortex/**
+!exts/omni.isaac.cortex.sample_behaviors/
+!exts/omni.isaac.cortex.sample_behaviors/**
+!exts/omni.isaac.motion_generation/
+!exts/omni.isaac.motion_generation/**
+
+#Ignore large files 
+exts/omni.isaac.motion_generation/motion_policy_configs/fixture_description/*.usd
+exts/omni.isaac.motion_generation/motion_policy_configs/yumi_description/**/*.usd
+
+# Ignore logs, cache, and binaries
+*.log
+*.cache
+*.tmp
