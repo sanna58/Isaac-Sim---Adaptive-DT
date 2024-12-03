@@ -3,6 +3,8 @@
 
 # Allow my project directory
 !exts/
+!YuMi_EGM_RWS/
+!YuMi_EGM_RWS/**
 
 # Ignore all subdirectories inside 'exts'
 exts/*
