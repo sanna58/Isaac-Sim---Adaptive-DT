@@ -1,0 +1,23 @@
+[core]
+reloadable = true
+order = 0
+
+[package]
+version = "1.0.4"
+category = "Simulation"
+title = "Isaac Cortex Sample Behaviors"
+description = "Sample Behaviors for Isaac Cortex"
+authors = ["NVIDIA"]
+repository = ""
+keywords = ["isaac", "samples", "manipulation"]
+changelog = "docs/CHANGELOG.md"
+readme = "docs/README.md"
+icon = "data/icon.png"
+writeTarget.kit = true
+
+[dependencies]
+"omni.isaac.core" = {}
+"omni.isaac.cortex" = {}
+
+[[python.module]]
+name = "omni.isaac.cortex.sample_behaviors"

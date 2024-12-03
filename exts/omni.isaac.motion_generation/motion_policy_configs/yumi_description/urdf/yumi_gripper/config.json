@@ -1,0 +1,10 @@
+{
+    "end_effector_frame_name": "yumi_grip_site_r",
+    "maximum_substep_size" : 0.00334,
+    "ignore_robot_state_updates" : false,
+    "relative_asset_paths": {
+        "robot_description_path" : "robot_descriptor.yaml",
+        "urdf_path": "../yumi_gripper.urdf",
+        "rmpflow_config_path" : "yumi_rmpflow_common.yaml"
+    }
+}
