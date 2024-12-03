@@ -5,7 +5,8 @@
 !exts/
 !YuMi_EGM_RWS/
 !YuMi_EGM_RWS/**
-
+!Camera_vision/
+!Camera_vision/**
 # Ignore all subdirectories inside 'exts'
 exts/*
 
