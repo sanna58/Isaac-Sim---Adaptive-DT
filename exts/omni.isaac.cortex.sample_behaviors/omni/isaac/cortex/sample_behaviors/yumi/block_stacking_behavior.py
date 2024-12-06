@@ -227,13 +227,13 @@ class BuildTowerContext(DfRobotApiContext):
             self.context = context
             # order_preference = ["Blue", "Yellow", "Green", "Red"]
             # self.desired_stack = [("%sCube" % c) for c in order_preference]
-            order_preference = self.read_order_preferences_from_ods() #Changed Here
-            print(order_preference)
-            self.desired_stack = [("%s" % c) for c in order_preference]
             self.tower_position = tower_position
             self.block_height = block_height
             self.stack = []
             self.prev_stack = None
+            # self.desired_stack = []
+            self.desired_stack = list(self.context.blocks.keys())
+            self.update_order_preferences()  # Fetch preferences initially
 
         def identify_colors_with_full_names(self,target_path):
             stage = omni.usd.get_context().get_stage()  # Get the current USD stage
@@ -272,24 +272,28 @@ class BuildTowerContext(DfRobotApiContext):
             
             
             return ordered_full_names
-                
-        def read_order_preferences_from_ods(self):
-            # yumi_extension=YumiCortexExtension.get_instance()
-            # order_preference=yumi_extension.get_order_preference()
-            
-            
-            yumi_extension=YumiCortexExtension.get_instance()
+        def update_order_preferences(self):
+            yumi_extension = YumiCortexExtension.get_instance()
+            # new_order_preference = yumi_extension.get_order_preference()
             LLm_order_preference=yumi_extension.get_order_preference()
+            print("llmstacking order:",LLm_order_preference)
             target_path = "/World/fixtureprim/Fixture"     
             full_names, parsed_colors = self.identify_colors_with_full_names(target_path)
-            order_preference =self.rearrange_by_preference(full_names, LLm_order_preference)
-            print("behaviour stack: order preference -",order_preference)
-            # stage = omni.usd.get_context().get_stage()
-            # tree_node_path_slide = "/World/fixtureprim/Fixture"
-            # tree_prim_slide = stage.GetPrimAtPath(tree_node_path_slide)
-            # print(tree_prim_slide)
             
-            return order_preference
+            self.new_order_preference =self.rearrange_by_preference(full_names, LLm_order_preference)
+            
+            print("desired stack :",self.desired_stack)
+            # Check if the new order preference is the same as the current one
+            # if [("%s" % c) for c in self.new_order_preference] == self.desired_stack:
+            #     print("Order preference unchanged. No update required.")
+            #     return  # Exit without updating
+            
+            # Update the desired stack if preferences have changed
+            print("Updated order preference:", self.new_order_preference)
+            self.desired_stack = [("%s" % c) for c in self.new_order_preference]
+            print("desired stack after :",self.desired_stack)
+            return self.new_order_preference
+
 
 
         
@@ -309,7 +313,7 @@ class BuildTowerContext(DfRobotApiContext):
             """
             # print("in desired order before the loop",self.desired_stack)
             # print("in current order before the loop",self.stack)
-     
+            self.update_order_preferences()
             for pref_name, curr_block in zip(self.desired_stack, self.stack):
                 # print("desired stack:", pref_name)
                 # print("current stack:", curr_block.name)
@@ -452,66 +456,14 @@ class BuildTowerContext(DfRobotApiContext):
                 BuildTowerContext.monitor_diagnostics,
             ]
         )
-    def identify_colors_with_full_names(self,target_path):
-        stage = omni.usd.get_context().get_stage()  # Get the current USD stage
-        target_prim = stage.GetPrimAtPath(target_path)  # Get the prim at the specified path
 
-        if not target_prim or not target_prim.IsValid():
-            print(f"Path '{target_path}' is invalid or does not exist.")
-            return [], []
+        
 
-        full_names = []
-        parsed_colors = []
-        
-        for child in target_prim.GetChildren():  # Get direct children of the target prim
-            child_name = child.GetName()
-            if "_" in child_name:
-                color = child_name.split("_")[0]  # Extract the part before the underscore
-                full_names.append(child_name)  # Store the full name
-                parsed_colors.append(color)   # Store the parsed color
-        
-        return full_names, parsed_colors
-    
-    def rearrange_by_preference(self,full_names, order_preference):
-        # Create a dictionary mapping color to full name
-        color_to_full_names = {}
-        for name in full_names:
-            color = name.split("_")[0]
-            if color not in color_to_full_names:
-                color_to_full_names[color] = []
-            color_to_full_names[color].append(name)
-        
-        # Rearrange full names based on the order preference
-        ordered_full_names = []
-        for color in order_preference:
-            if color in color_to_full_names:
-                ordered_full_names.extend(color_to_full_names[color])  # Add all entries for this color
-        
-        
-        return ordered_full_names
-                
-    def read_order_preferences_from_ods(self):
-                # yumi_extension=YumiCortexExtension.get_instance()
-                # order_preference=yumi_extension.get_order_preference()
-        
-        
-        yumi_extension=YumiCortexExtension.get_instance()
-        LLm_order_preference=yumi_extension.get_order_preference()
-        target_path = "/World/fixtureprim/Fixture"     
-        full_names, parsed_colors = self.identify_colors_with_full_names(target_path)
-        order_preference =self.rearrange_by_preference(full_names, LLm_order_preference)
-        print("behaviour stack: order preference -",order_preference)
-        # stage = omni.usd.get_context().get_stage()
-        # tree_node_path_slide = "/World/fixtureprim/Fixture"
-        # tree_prim_slide = stage.GetPrimAtPath(tree_node_path_slide)
-        # print(tree_prim_slide)
-        
-        return order_preference
     def reset(self):
         self.blocks = OrderedDict()
-        print("loading blocks")
+        # print("loading blocks")
         for i, (name, cortex_obj) in enumerate(self.robot.registered_obstacles.items()):
-            print("{}) {}".format(i, name))
+            # print("{}) {}".format(i, name))
 
             # This behavior might be run either with CortexObjects (e.g. when synchronizing with a
             # sim/real world via ROS) or standard core API objects. If it's the latter, add the
@@ -521,7 +473,8 @@ class BuildTowerContext(DfRobotApiContext):
 
             cortex_obj.sync_throttle_dt = 0.25
             self.blocks[name] = BuildTowerContext.Block(i, cortex_obj, self.block_grasp_Ts)
-
+            # print("self.blocks[name] info",self.blocks[name])
+        # print("self.blocks[name] info final",self.blocks[name])
         self.block_tower = BuildTowerContext.BlockTower(self.tower_position, self.block_height, self)
 
         self.active_block = None
@@ -583,6 +536,7 @@ class BuildTowerContext(DfRobotApiContext):
     @property
     def next_block_name(self):
         remaining_block_names = [b.name for b in self.find_not_in_tower()]
+        
         if len(remaining_block_names) == 0:
             return None
         for name in self.block_tower.desired_stack:
@@ -591,11 +545,24 @@ class BuildTowerContext(DfRobotApiContext):
         return name
 
     def find_not_in_tower(self):
+        self.block_tower.update_order_preferences()
         blocks = [block for (name, block) in self.blocks.items()]
+    
         for b in self.block_tower.stack:
             blocks[b.i] = None
+        not_in_tower = [b for b in blocks if b is not None]
 
-        return [b for b in blocks if b is not None]
+        ordered_blocks = []
+        print("self.block_tower.desired_stack:",self.block_tower.desired_stack)
+        for desired_name in self.block_tower.desired_stack:
+            for block in not_in_tower:
+                # print("block.name:_",block.name)
+                if block.name == desired_name:
+                    
+                    ordered_blocks.append(block)
+        # print("ordered_blocks :", ordered_blocks.name)
+        return ordered_blocks   
+        # return [b for b in blocks if b is not None]
 
     def print_tower_status(self):
         in_tower = self.block_tower.stack
@@ -615,17 +582,19 @@ class BuildTowerContext(DfRobotApiContext):
             )
         print()
 
+
+
     def monitor_perception(self):
         for _, block in self.blocks.items():
             obj = block.obj
             if not obj.has_measured_pose():
                 continue
-
+    
             measured_T = obj.get_measured_T()
             belief_T = obj.get_T()
-
+    
             not_in_gripper = block != self.in_gripper
-
+    
             eff_p = self.robot.arm.get_fk_p()
             sync_performed = False
             if not_in_gripper and np.linalg.norm(belief_T[:3, 3] - eff_p) > 0.05:
@@ -634,14 +603,30 @@ class BuildTowerContext(DfRobotApiContext):
             elif np.linalg.norm(belief_T[:3, 3] - measured_T[:3, 3]) > 0.15:
                 sync_performed = True
                 obj.sync_to_measured_pose()
-
+    
+        # Check for new blocks not already in context
+        detected_blocks = {name for name in self.robot.registered_obstacles.keys()}
+        existing_blocks = set(self.blocks.keys())
+        new_blocks = detected_blocks - existing_blocks
+    
+        for name in new_blocks:
+            cortex_obj = self.robot.registered_obstacles[name]
+            if not isinstance(cortex_obj, CortexObject):
+                cortex_obj = CortexObject(cortex_obj)
+            cortex_obj.sync_throttle_dt = 0.25
+    
+            self.blocks[name] = BuildTowerContext.Block(
+                len(self.blocks), cortex_obj, self.block_grasp_Ts
+            )
+            print(f"New block detected and added to pick preferences: {name}")
     def monitor_block_tower(self):
         """ Monitor the current state of the block tower.
 
         The block tower is determined as the collection of blocks at the tower location and their
         order by height above the table.
         """
-        order_preference = self.read_order_preferences_from_ods()
+        self.block_tower.update_order_preferences()
+        # self.update_blocks()
         stage = omni.usd.get_context().get_stage()
         tree_node_path = "/World/Holder"
         tree_prim = stage.GetPrimAtPath(tree_node_path)
@@ -693,7 +678,7 @@ class BuildTowerContext(DfRobotApiContext):
 
         if len(new_block_tower_sequence) > 1:
             new_block_tower_sequence.sort(key=lambda v: v[0])
-            # print(new_block_tower_sequence)
+            print(new_block_tower_sequence)
 
         self.block_tower.stash_stack()
         for _, block in new_block_tower_sequence:
@@ -705,6 +690,20 @@ class BuildTowerContext(DfRobotApiContext):
 
         for block in removed_blocks:
             block.is_aligned = None
+        # Identify and print blocks not in the tower
+        not_in_tower = self.find_not_in_tower()
+        for i, block in enumerate(not_in_tower):
+            block_name = block.name
+            if block_name in self.block_tower.desired_stack:
+                next_in_order = self.block_tower.desired_stack[self.block_tower.height]
+                if block_name == next_in_order:
+                    block.is_aligned = True  # Mark the block as aligned for placement
+                else:
+                    block.is_aligned = None
+            
+        print("\nBlocks not in tower:")
+        for i, block in enumerate(not_in_tower):
+            print(f"{i}) {block.name}, aligned: {block.is_aligned}")
 
     def monitor_gripper_has_block(self):
         if self.gripper_has_block:
@@ -848,7 +847,10 @@ class ChooseNextBlockForTowerBuildUp(DfDecider):
 
     def decide(self):
         ct = self.context
+        ct.block_tower.update_order_preferences()
+        # print("test ct.next_block_name",ct.next_block_name)
         ct.active_block = ct.blocks[ct.next_block_name]
+        # print("test ct.active _block",ct.active_block)
 
         # Check exceptions
         block_p, _ = ct.active_block.obj.get_world_pose()
