@@ -22,15 +22,11 @@ from omni.isaac.cortex.df import *
 from omni.isaac.cortex.dfb import DfRobotApiContext, DfApproachGrasp, DfCloseGripper, DfOpenGripper, make_go_home
 import omni.isaac.cortex.math_util as math_util
 from omni.isaac.cortex.motion_commander import MotionCommand, PosePq
-from omni.isaac.examples.yumi_cortex.yumi_cortex_extension import YumiCortexExtension
 
-import omni
-from pxr import Usd, UsdGeom
+import pandas as pd
 
-# import ollama
-# import re
 
-def make_grasp_T(t, ay, offset=np.array([0.0,0.0,0.0])):
+def make_grasp_T(t, ay):
     az = math_util.normalized(-t)
     ax = np.cross(ay, az)
 
@@ -38,12 +34,12 @@ def make_grasp_T(t, ay, offset=np.array([0.0,0.0,0.0])):
     T[:3, 0] = ax
     T[:3, 1] = ay
     T[:3, 2] = az
-    T[:3, 3] = t +offset
+    T[:3, 3] = t
 
     return T
 
 
-def make_block_grasp_Ts(block_pick_height, offset=np.array([0.0,0.0,0.0])):
+def make_block_grasp_Ts(block_pick_height):
 
     # angle_rad = np.radians(180)
     # R = np.array([
@@ -61,7 +57,7 @@ def make_block_grasp_Ts(block_pick_height, offset=np.array([0.0,0.0,0.0])):
             ay = R[:, (i + j + 1) % 3]
             for s1 in [1, -1]:
                 for s2 in [1, -1]:
-                    Ts.append(make_grasp_T(s1 * t, s2 * ay,offset=offset))
+                    Ts.append(make_grasp_T(s1 * t, s2 * ay))
 
     return Ts
 
@@ -120,7 +116,7 @@ def get_best_obj_grasp(obj_T, obj_grasp_Ts, eff_T, other_obj_Ts):
     # the robot (most natural configuration).
     obj_p = obj_T[:3, 3]
     v = math_util.normalized(-obj_p)
-    block_y_axis = obj_T[:3, 1]
+
     # Score each of the candidate grasps based on how their world transform is oriented relative to
     # the robot and relative to nearby other blocks.
     scores = np.zeros(len(Ts))
@@ -128,8 +124,6 @@ def get_best_obj_grasp(obj_T, obj_grasp_Ts, eff_T, other_obj_Ts):
         # The base score is a function of how the end-effector would be oriented relative to the
         # base of the robot.
         score = grasp_T[:3, 0].dot(v)
-        grasp_x_axis = grasp_T[:3, 1]
-        # score = np.dot(grasp_x_axis, block_y_axis)
 
         # For all surrounding objects, if the object is closer than 15cm away, add a proximity cost
         # (negative score) for the grasp based on whether the finger might clip it.
@@ -226,76 +220,19 @@ class BuildTowerContext(DfRobotApiContext):
         def __init__(self, tower_position, block_height, context):
             self.context = context
             # order_preference = ["Blue", "Yellow", "Green", "Red"]
-            # self.desired_stack = [("%sCube" % c) for c in order_preference]
+            order_preference = self.read_order_preferences_from_ods() #Changed Here
+            self.desired_stack = [("%s" % c) for c in order_preference]
             self.tower_position = tower_position
             self.block_height = block_height
             self.stack = []
             self.prev_stack = None
-            # self.desired_stack = []
-            self.desired_stack = list(self.context.blocks.keys())
-            self.update_order_preferences()  # Fetch preferences initially
 
-        def identify_colors_with_full_names(self,target_path):
-            stage = omni.usd.get_context().get_stage()  # Get the current USD stage
-            target_prim = stage.GetPrimAtPath(target_path)  # Get the prim at the specified path
-
-            if not target_prim or not target_prim.IsValid():
-                print(f"Path '{target_path}' is invalid or does not exist.")
-                return [], []
-
-            full_names = []
-            parsed_colors = []
-            
-            for child in target_prim.GetChildren():  # Get direct children of the target prim
-                child_name = child.GetName()
-                if "_" in child_name:
-                    color = child_name.split("_")[0]  # Extract the part before the underscore
-                    full_names.append(child_name)  # Store the full name
-                    parsed_colors.append(color)   # Store the parsed color
-            
-            return full_names, parsed_colors
-        
-        def rearrange_by_preference(self,full_names, order_preference):
-            # Create a dictionary mapping color to full name
-            color_to_full_names = {}
-            for name in full_names:
-                color = name.split("_")[0]
-                if color not in color_to_full_names:
-                    color_to_full_names[color] = []
-                color_to_full_names[color].append(name)
-            
-            # Rearrange full names based on the order preference
-            ordered_full_names = []
-            for color in order_preference:
-                if color in color_to_full_names:
-                    ordered_full_names.extend(color_to_full_names[color])  # Add all entries for this color
-            
-            
-            return ordered_full_names
-        def update_order_preferences(self):
-            yumi_extension = YumiCortexExtension.get_instance()
-            # new_order_preference = yumi_extension.get_order_preference()
-            LLm_order_preference=yumi_extension.get_order_preference()
-            print("llmstacking order:",LLm_order_preference)
-            target_path = "/World/fixtureprim/Fixture"     
-            full_names, parsed_colors = self.identify_colors_with_full_names(target_path)
-            
-            self.new_order_preference =self.rearrange_by_preference(full_names, LLm_order_preference)
-            
-            print("desired stack :",self.desired_stack)
-            # Check if the new order preference is the same as the current one
-            # if [("%s" % c) for c in self.new_order_preference] == self.desired_stack:
-            #     print("Order preference unchanged. No update required.")
-            #     return  # Exit without updating
-            
-            # Update the desired stack if preferences have changed
-            print("Updated order preference:", self.new_order_preference)
-            self.desired_stack = [("%s" % c) for c in self.new_order_preference]
-            print("desired stack after :",self.desired_stack)
-            return self.new_order_preference
-
-
-
+        def read_order_preferences_from_ods(self):
+            order_preference = []
+            file_path = '/home/sanjay/Desktop/Cloth_logic.xlsx'  # Specify the full file path
+            df = pd.read_excel(file_path)
+            order_preference = df.iloc[:, 4].tolist()
+            return order_preference
         
         @property
         def height(self):
@@ -311,15 +248,11 @@ class BuildTowerContext(DfRobotApiContext):
         def current_stack_in_correct_order(self):
             """ Returns true if the current tower is in the correct order. False otherwise.
             """
-            # print("in desired order before the loop",self.desired_stack)
-            # print("in current order before the loop",self.stack)
-            self.update_order_preferences()
             for pref_name, curr_block in zip(self.desired_stack, self.stack):
                 # print("desired stack:", pref_name)
-                # print("current stack:", curr_block.name)
+                # print("stack:", curr_block.name)
                 if curr_block.name != pref_name:
-                    # print("in current order",curr_block.name)
-                    # print("in desired order",pref_name)
+                    print("Second*********************")
                     return False
 
             return True
@@ -328,7 +261,7 @@ class BuildTowerContext(DfRobotApiContext):
         def is_complete(self):
             # TODO: This doesn't account for desired vs actual ordering currently.
             if self.height != len(self.desired_stack):
-                # print("First*********************")
+                print("First*********************")
                 return False
 
             return self.current_stack_in_correct_order
@@ -353,8 +286,6 @@ class BuildTowerContext(DfRobotApiContext):
             return new_blocks, removed_blocks
 
         def set_top_block_to_aligned(self):
-            
-            print("self stack value",self.stack)
             if len(self.stack) > 0:
                 self.stack[-1].is_aligned = True
 
@@ -372,36 +303,14 @@ class BuildTowerContext(DfRobotApiContext):
 
         @property
         def next_block_placement_T(self):
-            
             # h = self.height
             # fractional_margin = 0.025
             # dz = (h + 0.5 + fractional_margin) * self.block_height
             # p = self.tower_position + np.array([0.0, 0.0, dz])
-            stage = omni.usd.get_context().get_stage()
-            tree_node_path = "/World/Holder"
-            tree_prim = stage.GetPrimAtPath(tree_node_path)
-            if not tree_prim.IsValid():
-                print(f"Tree node at {tree_node_path} not found.")
-            else:
-                # print(f"Tree node found at {tree_node_path}")
-
-                # Access properties or children of the tree node
-                # For example, get the tree's transform or children
-                xform = UsdGeom.Xform(tree_prim)
-                # transform_matrix = xform.GetLocalTransformation()
-                tray_xform = UsdGeom.Xformable(tree_prim)
-                transform= tray_xform.GetLocalTransformation()
-                getprim_pos = transform.ExtractTranslation()
-                # self.Drop_off_location = (POS_HOLD[0]+0.065+(0.075/2),POS_HOLD[1],POS_HOLD[2]+0.065+(0.075/2))
-                self.towerlocation=(getprim_pos[0]+0.012+(0.005/2) + 0.007,getprim_pos[1],getprim_pos[2]+0.065+(0.075/2))
 
             h = self.height
-          
             dx = h * 0.007 # Distance between one holder slot to the next one
-            # p = self.tower_position + np.array([dx, 0.0, 0.0])
-            p = self.towerlocation + np.array([dx, 0.0, 0.0]) 
-            
-            
+            p = self.tower_position + np.array([dx, 0.0, 0.0])
             # # Define rotation angles in radians
             # theta_z = np.radians(180)  # 90 degrees in radians
             # theta_x = np.radians(90)  # 90 degrees in radians
@@ -457,13 +366,11 @@ class BuildTowerContext(DfRobotApiContext):
             ]
         )
 
-        
-
     def reset(self):
         self.blocks = OrderedDict()
-        # print("loading blocks")
+        print("loading blocks")
         for i, (name, cortex_obj) in enumerate(self.robot.registered_obstacles.items()):
-            # print("{}) {}".format(i, name))
+            print("{}) {}".format(i, name))
 
             # This behavior might be run either with CortexObjects (e.g. when synchronizing with a
             # sim/real world via ROS) or standard core API objects. If it's the latter, add the
@@ -473,8 +380,7 @@ class BuildTowerContext(DfRobotApiContext):
 
             cortex_obj.sync_throttle_dt = 0.25
             self.blocks[name] = BuildTowerContext.Block(i, cortex_obj, self.block_grasp_Ts)
-            # print("self.blocks[name] info",self.blocks[name])
-        # print("self.blocks[name] info final",self.blocks[name])
+
         self.block_tower = BuildTowerContext.BlockTower(self.tower_position, self.block_height, self)
 
         self.active_block = None
@@ -536,7 +442,6 @@ class BuildTowerContext(DfRobotApiContext):
     @property
     def next_block_name(self):
         remaining_block_names = [b.name for b in self.find_not_in_tower()]
-        
         if len(remaining_block_names) == 0:
             return None
         for name in self.block_tower.desired_stack:
@@ -545,24 +450,11 @@ class BuildTowerContext(DfRobotApiContext):
         return name
 
     def find_not_in_tower(self):
-        self.block_tower.update_order_preferences()
         blocks = [block for (name, block) in self.blocks.items()]
-    
         for b in self.block_tower.stack:
             blocks[b.i] = None
-        not_in_tower = [b for b in blocks if b is not None]
 
-        ordered_blocks = []
-        print("self.block_tower.desired_stack:",self.block_tower.desired_stack)
-        for desired_name in self.block_tower.desired_stack:
-            for block in not_in_tower:
-                # print("block.name:_",block.name)
-                if block.name == desired_name:
-                    
-                    ordered_blocks.append(block)
-        # print("ordered_blocks :", ordered_blocks.name)
-        return ordered_blocks   
-        # return [b for b in blocks if b is not None]
+        return [b for b in blocks if b is not None]
 
     def print_tower_status(self):
         in_tower = self.block_tower.stack
@@ -582,19 +474,17 @@ class BuildTowerContext(DfRobotApiContext):
             )
         print()
 
-
-
     def monitor_perception(self):
         for _, block in self.blocks.items():
             obj = block.obj
             if not obj.has_measured_pose():
                 continue
-    
+
             measured_T = obj.get_measured_T()
             belief_T = obj.get_T()
-    
+
             not_in_gripper = block != self.in_gripper
-    
+
             eff_p = self.robot.arm.get_fk_p()
             sync_performed = False
             if not_in_gripper and np.linalg.norm(belief_T[:3, 3] - eff_p) > 0.05:
@@ -603,53 +493,14 @@ class BuildTowerContext(DfRobotApiContext):
             elif np.linalg.norm(belief_T[:3, 3] - measured_T[:3, 3]) > 0.15:
                 sync_performed = True
                 obj.sync_to_measured_pose()
-    
-        # Check for new blocks not already in context
-        detected_blocks = {name for name in self.robot.registered_obstacles.keys()}
-        existing_blocks = set(self.blocks.keys())
-        new_blocks = detected_blocks - existing_blocks
-    
-        for name in new_blocks:
-            cortex_obj = self.robot.registered_obstacles[name]
-            if not isinstance(cortex_obj, CortexObject):
-                cortex_obj = CortexObject(cortex_obj)
-            cortex_obj.sync_throttle_dt = 0.25
-    
-            self.blocks[name] = BuildTowerContext.Block(
-                len(self.blocks), cortex_obj, self.block_grasp_Ts
-            )
-            print(f"New block detected and added to pick preferences: {name}")
+
     def monitor_block_tower(self):
         """ Monitor the current state of the block tower.
 
         The block tower is determined as the collection of blocks at the tower location and their
         order by height above the table.
         """
-        self.block_tower.update_order_preferences()
-        # self.update_blocks()
-        stage = omni.usd.get_context().get_stage()
-        tree_node_path = "/World/Holder"
-        tree_prim = stage.GetPrimAtPath(tree_node_path)
-        
-        if not tree_prim.IsValid():
-            print(f"Tree node at {tree_node_path} not found.")
-        else:
-            # print(f"Tree node found at {tree_node_path}")
-
-            # Access properties or children of the tree node
-            # For example, get the tree's transform or children
-            xform = UsdGeom.Xform(tree_prim)
-            # transform_matrix = xform.GetLocalTransformation()
-            tray_xform = UsdGeom.Xformable(tree_prim)
-            transform= tray_xform.GetLocalTransformation()
-            getprim_pos = transform.ExtractTranslation()
-            # self.Drop_off_location = (POS_HOLD[0]+0.065+(0.075/2),POS_HOLD[1],POS_HOLD[2]+0.065+(0.075/2))
-            self.towerlocation=(getprim_pos[0]+0.012+(0.005/2) + 0.007,getprim_pos[1],getprim_pos[2]+0.065+(0.075/2))
-        tower_xy = self.towerlocation[:2]
-        
-        print("tower xy value in monitor block tower",tower_xy)
-        
-        # tower_xy = self.block_tower.tower_position[:2]
+        tower_xy = self.block_tower.tower_position[:2]
         # tower_yz = self.block_tower.tower_position[-2:] # changed this
 
         new_block_tower_sequence = []
@@ -662,25 +513,24 @@ class BuildTowerContext(DfRobotApiContext):
             block_xy = p[:2]
             block_z = p[2]
             # block_yz = p[-2:] # Changed this
-            block_x = p[0] # Changed this
-            # print("towerxy",tower_xy)
+            # block_x = p[0] # Changed this
+
             dist_to_tower = np.linalg.norm(tower_xy - block_xy)
             # dist_to_tower = np.linalg.norm(tower_yz - block_yz) # changed this
-            # print("distance to tower",name,":",dist_to_tower)
+
             # print(dist_to_tower)
             # thresh = self.block_height / 2
-            thresh = (len(self.block_tower.stack) * 0.007) + 0.007
-            # print("thresh",name,":",thresh)
+            thresh = (len(self.block_tower.stack) * 0.007) + 0.003
             # thresh = 0.003 # Changed it to a distance higher that the distance between two slots in holder (0.007)
 
             if dist_to_tower <= thresh:
-                # new_block_tower_sequence.append((block_z, block))
-                new_block_tower_sequence.append((block_x, block)) # changed this
+                new_block_tower_sequence.append((block_z, block))
+                # new_block_tower_sequence.append((block_x, block)) # changed this
                 
 
         if len(new_block_tower_sequence) > 1:
             new_block_tower_sequence.sort(key=lambda v: v[0])
-            print(new_block_tower_sequence)
+            # print(new_block_tower_sequence)
 
         self.block_tower.stash_stack()
         for _, block in new_block_tower_sequence:
@@ -692,20 +542,6 @@ class BuildTowerContext(DfRobotApiContext):
 
         for block in removed_blocks:
             block.is_aligned = None
-        # Identify and print blocks not in the tower
-        not_in_tower = self.find_not_in_tower()
-        for i, block in enumerate(not_in_tower):
-            block_name = block.name
-            if block_name in self.block_tower.desired_stack:
-                next_in_order = self.block_tower.desired_stack[self.block_tower.height]
-                if block_name == next_in_order:
-                    block.is_aligned = True  # Mark the block as aligned for placement
-                else:
-                    block.is_aligned = None
-            
-        print("\nBlocks not in tower:")
-        for i, block in enumerate(not_in_tower):
-            print(f"{i}) {block.name}, aligned: {block.is_aligned}")
 
     def monitor_gripper_has_block(self):
         if self.gripper_has_block:
@@ -849,14 +685,10 @@ class ChooseNextBlockForTowerBuildUp(DfDecider):
 
     def decide(self):
         ct = self.context
-        ct.block_tower.update_order_preferences()
-        # print("test ct.next_block_name",ct.next_block_name)
         ct.active_block = ct.blocks[ct.next_block_name]
-        # print("test ct.active _block",ct.active_block)
 
         # Check exceptions
         block_p, _ = ct.active_block.obj.get_world_pose()
-        print("hello check here:",block_p)
         if np.linalg.norm(block_p) < 0.25:
             print("block too close to robot base: {}".format(ct.active_block.name))
             return DfDecision("go_home")
@@ -874,7 +706,6 @@ class ChooseNextBlockForTowerBuildUp(DfDecider):
             block.obj.get_transform() for block in ct.blocks.values() if ct.next_block_name != block.obj.name
         ]
         ct.active_block.chosen_grasp = ct.active_block.get_best_grasp(ct.robot.arm.get_fk_T(), other_obj_Ts)
-        print("go home calculations;",ct.next_block_name,np.linalg.norm(block_p - self.context.block_tower.tower_position))
         return DfDecision(self.child_name, ct.active_block.chosen_grasp)
 
     def exit(self):
@@ -913,11 +744,8 @@ class ChooseNextBlock(DfDecider):
 
     def decide(self):
         if self.context.block_tower.current_stack_in_correct_order:
-            print("tower in correct order")
             return DfDecision("choose_next_block_for_tower")
-        
         else:
-            print("tower in wrong order")
             return DfDecision("choose_tower_block")
 
 
@@ -1060,7 +888,7 @@ class ReachToPlaceOnTower(DfDecider):
     def __init__(self):
         super().__init__()
         # self.add_child("approach_grasp", DfApproachGrasp())
-        self.add_child("approach_grasp", DfApproachGrasp(approach_along_axis=1, direction_length=0.085)) # Defined the derection of approach for pickup and the direction length specifying the distace from which the approach will start
+        self.add_child("approach_grasp", DfApproachGrasp(approach_along_axis=1, direction_length=0.2)) # Defined the derection of approach for pickup and the direction length specifying the distace from which the approach will start
 
     def decide(self):
         ct = self.context
@@ -1196,19 +1024,10 @@ class BlockPickAndPlaceDispatch(DfDecider):
         else:
             return DfDecision("place")
 
+
 def make_decider_network(robot, Drop_off_location = None):
     if Drop_off_location is None:
         Drop_off_location = np.array([0.35, 0.0, 0.068])
     return DfNetwork(
         BlockPickAndPlaceDispatch(), context=BuildTowerContext(robot, tower_position=Drop_off_location)
     )
-
-
-
-# Copyright (c) 2022, NVIDIA  All rights reserved.
-#
-# NVIDIA CORPORATION and its licensors retain all intellectual property
-# and proprietary rights in and to this software, related documentation
-# and any modifications thereto.  Any use, reproduction, disclosure or
-# distribution of this software and related documentation without an express
-# license agreement from NVIDIA CORPORATION is strictly prohibited.

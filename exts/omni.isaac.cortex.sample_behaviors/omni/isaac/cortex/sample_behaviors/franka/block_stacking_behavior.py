@@ -14,6 +14,8 @@ import math
 import random
 import sys
 import time
+import sqlite3
+import json
 from collections import OrderedDict
 
 import numpy as np
@@ -200,8 +202,11 @@ class BuildTowerContext(DfRobotApiContext):
     class BlockTower:
         def __init__(self, tower_position, block_height, context):
             self.context = context
-            order_preference = ["Blue", "Yellow", "Green", "Red"]
-            self.desired_stack = [("%sCube" % c) for c in order_preference]
+
+            order_preference = self.context.query_database(table_name="Sort_Order", condition_value="sequence_id", column_to_query="object_name", condition_column=None)
+            self.desired_stack = order_preference
+            # order_preference = ["Blue", "Yellow", "Green", "Red"]
+            # self.desired_stack = [("%sCube" % c) for c in order_preference]
             self.tower_position = tower_position
             self.block_height = block_height
             self.stack = []
@@ -229,6 +234,8 @@ class BuildTowerContext(DfRobotApiContext):
         @property
         def is_complete(self):
             # TODO: This doesn't account for desired vs actual ordering currently.
+            # print("self.height = ", self.height)
+            # print("len(self.desired_stack) = ", len(self.desired_stack))
             if self.height != len(self.desired_stack):
                 return False
 
@@ -273,7 +280,8 @@ class BuildTowerContext(DfRobotApiContext):
         def next_block_placement_T(self):
             h = self.height
             fractional_margin = 0.025
-            dz = (h + 0.5 + fractional_margin) * self.block_height
+            # dz = (h + 0.5 + fractional_margin) * self.block_height
+            dz = (h + 0.5) * self.block_height # Changed this to place it exactly on the floor instead of dropping
             p = self.tower_position + np.array([0.0, 0.0, dz])
             R = np.eye(3)
             T = math_util.pack_Rp(R, p)
@@ -281,8 +289,8 @@ class BuildTowerContext(DfRobotApiContext):
 
     def __init__(self, robot, tower_position):
         super().__init__(robot)
+        self.db_manager = DatabaseManager()
         self.robot = robot
-
         self.block_height = 0.0515
         self.block_pick_height = 0.02
         self.block_grasp_Ts = make_block_grasp_Ts(self.block_pick_height)
@@ -298,7 +306,19 @@ class BuildTowerContext(DfRobotApiContext):
                 BuildTowerContext.monitor_suppression_requirements,
                 BuildTowerContext.monitor_diagnostics,
             ]
-        )
+        )        
+        # self.db_manager.populate_database()
+        # self.db_manager.export_to_json("/home/sanjay/.local/share/ov/pkg/isaac_sim-2023.1.0/exts/omni.isaac.cortex.sample_behaviors/omni/isaac/cortex/sample_behaviors/Exported_json/database.json")
+        self.db_manager.check_table_schema("sequences")
+
+    def query_database(self, table_name, condition_value, column_to_query, condition_column):
+        # Example: Query task information
+        result = self.db_manager.query_task_info(table_name, condition_value, column_to_query, condition_column)
+        print(f"Query result for task '{table_name}': {result}")
+        return result
+
+    def update_db_data(self, table_name, column_to_update, new_value, condition_column, condition_value):
+        self.db_manager.update_table(table_name, column_to_update, new_value, condition_column, condition_value)
 
     def reset(self):
         self.blocks = OrderedDict()
@@ -324,6 +344,9 @@ class BuildTowerContext(DfRobotApiContext):
         self.print_dt = 0.25
         self.next_print_time = None
         self.start_time = None
+
+        self.reached_target_T = False
+        self.screw_finished = False
 
     @property
     def has_active_block(self):
@@ -728,7 +751,101 @@ class LiftState(DfState):
     def exit(self):
         # On exit, reset the posture config back to the default value.
         self.context.robot.arm.set_posture_config_to_default()
+        self.context.reached_target_T = False
 
+class SlideState(DfState):
+    """A state to slide the block along the x-axis by a specified distance."""
+
+    def __init__(self, slide_distance):
+        self.slide_distance = slide_distance
+        self.target_pose = None
+
+    def enter(self):
+        # Get the current end-effector pose.
+        eff_T = self.context.robot.arm.get_fk_T()
+        eff_R, eff_p = math_util.unpack_T(eff_T)
+
+        # Compute the target pose by moving along the x-axis.
+        eff_p[0] += self.slide_distance
+        self.target_pose = PosePq(eff_p, math_util.matrix_to_quat(eff_R))
+
+        # Send the sliding motion command.
+        self.context.robot.arm.send(MotionCommand(target_pose=self.target_pose))
+
+    def step(self):
+        # Check if the current pose matches the target pose.
+        eff_T = self.context.robot.arm.get_fk_T()
+        if math_util.transforms_are_close(
+            self.target_pose.to_T(), eff_T, p_thresh=0.005, R_thresh=0.01
+        ):
+            return None  # Exit this state.
+        return self  # Continue sliding.
+
+    def exit(self):
+        self.context.reached_target_T = False
+
+class RotateState(DfState):
+    """A state to rotate the cube by a specified angle around the z-axis."""
+
+    def __init__(self, rotation_angle_degrees):
+        self.rotation_angle_radians = np.radians(rotation_angle_degrees)
+        self.target_pose = None
+
+    def _calculate_rotation_matrix(self, angle, axis):
+        """Generate a rotation matrix for a given angle (radians) and axis."""
+        axis = math_util.normalized(axis)
+        cos_theta = np.cos(angle)
+        sin_theta = np.sin(angle)
+        one_minus_cos = 1 - cos_theta
+
+        x, y, z = axis
+        rotation_matrix = np.array([
+            [
+                cos_theta + x * x * one_minus_cos,
+                x * y * one_minus_cos - z * sin_theta,
+                x * z * one_minus_cos + y * sin_theta,
+            ],
+            [
+                y * x * one_minus_cos + z * sin_theta,
+                cos_theta + y * y * one_minus_cos,
+                y * z * one_minus_cos - x * sin_theta,
+            ],
+            [
+                z * x * one_minus_cos - y * sin_theta,
+                z * y * one_minus_cos + x * sin_theta,
+                cos_theta + z * z * one_minus_cos,
+            ],
+        ])
+        return rotation_matrix
+
+    def enter(self):
+        # Get the current end-effector pose.
+        eff_T = self.context.robot.arm.get_fk_T()
+        eff_R, eff_p = math_util.unpack_T(eff_T)
+
+        # Compute the target rotation matrix.
+        rotation_matrix = self._calculate_rotation_matrix(
+            self.rotation_angle_radians, axis=np.array([0.0, 0.0, 1.0])  # Rotate around the z-axis.
+        )
+        target_R = rotation_matrix @ eff_R  # Apply the rotation.
+
+        # Set the target pose.
+        self.target_pose = PosePq(eff_p, math_util.matrix_to_quat(target_R))
+
+        # Send the rotation motion command.
+        self.context.robot.arm.send(MotionCommand(target_pose=self.target_pose))
+
+    def step(self):
+        # Check if the current pose matches the target pose.
+        eff_T = self.context.robot.arm.get_fk_T()
+        if math_util.transforms_are_close(
+            self.target_pose.to_T(), eff_T, p_thresh=0.005, R_thresh=0.01
+        ):
+            return None  # Exit this state.
+        return self  # Continue rotating.
+
+    def exit(self):
+        self.context.reached_target_T = True
 
 class PickBlockRd(DfStateMachineDecider, DfRldsNode):
     def __init__(self):
@@ -739,6 +856,8 @@ class PickBlockRd(DfStateMachineDecider, DfRldsNode):
                 [
                     DfSetLockState(set_locked_to=True, decider=self),
                     DfTimedDeciderState(DfCloseGripper(), activity_duration=0.5),
+                    # SlideState(slide_distance=0.02),
+                    # RotateState(rotation_angle_degrees=90),
                     LiftState(command_delta_z=0.3, cautious_command_delta_z=0.03, success_delta_z=0.075),
                     DfWriteContextState(lambda ctx: ctx.mark_block_in_gripper()),
                     DfSetLockState(set_locked_to=False, decider=self),
@@ -819,10 +938,17 @@ class ReachToPlaceOnTower(DfDecider):
     def decide(self):
         ct = self.context
         ct.placement_target_eff_T = calc_grasp_for_top_of_tower(ct)
+        eff_T = ct.robot.arm.get_fk_T()
+        if math_util.transforms_are_close(ct.placement_target_eff_T, eff_T, p_thresh=0.01, R_thresh=0.02):
+            self.context.reached_target_T = True
+            return None
+        
         return DfDecision("approach_grasp", ct.placement_target_eff_T)
 
     def exit(self):
-        self.context.placement_target_eff_T = None
+        # self.context.placement_target_eff_T = None
+        self.context.reached_target_T = True
+        print("Exiting ReachToPlaceOnTower: reached_target_T set to True")
 
 
 class ReachToPlaceOnTable(DfDecider):
@@ -857,7 +983,8 @@ class ReachToPlaceOnTable(DfDecider):
         return DfDecision("approach_grasp", ct.placement_target_eff_T)
 
     def exit(self):
-        self.context.placement_target_eff_T = None
+        # self.context.placement_target_eff_T = None
+        self.context.reached_target_T = True
 
 
 class ReachToPlacementRd(DfRldsNode):
@@ -880,12 +1007,87 @@ class ReachToPlacementRd(DfRldsNode):
         else:
             return DfDecision("reach_to_place_table")
 
+    def exit(self):
+        self.context.reached_target_T = True
+        print("Exiting ReachToPlacementRd: reached_target_T set to True")
 
 def set_top_block_aligned(ct):
     top_block = ct.block_tower.top_block
     if top_block is not None:
         top_block.set_aligned()
 
+class ScrewRd(DfStateMachineDecider, DfRldsNode):
+    """A state sequence for performing a screwing motion with the cube."""
+
+    def __init__(self):
+        db_manager = DatabaseManager()
+
+        sequence = [DfSetLockState(set_locked_to=True, decider=self),]
+        number_rot = db_manager.query_task_info(table_name="Screw_Op_Parmeters", condition_value=4, column_to_query="number_of_rotations", condition_column="operation_order")
+        for _ in range(number_rot):
+            sequence.append(RotateState(rotation_angle_degrees=90))  # Rotate the cube 90 degrees
+            sequence.append(DfTimedDeciderState(DfOpenGripper(), activity_duration=0.5))
+            sequence.append(RotateState(rotation_angle_degrees=-90))  # Rotate back to the original position.
+            sequence.append(DfTimedDeciderState(DfCloseGripper(), activity_duration=0.5))
+
+        sequence.append(DfSetLockState(set_locked_to=False, decider=self))
+
+        super().__init__(
+            DfStateSequence(sequence)
+            )
+        self.is_locked = False
+
+    def is_runnable(self):  
+        ct = self.context      
+        eff_T = ct.robot.arm.get_fk_T()
+        placement_T = ct.placement_target_eff_T
+
+        thresh_met = math_util.transforms_are_close(placement_T, eff_T, p_thresh=0.01, R_thresh=0.02)
+
+        # if thresh_met and self.context.gripper_has_block:
+        if self.context.gripper_has_block:
+            number_of_rotations_db = ct.query_database(table_name="Screw_Op_Parmeters", condition_value=ct.active_block.name, column_to_query="number_of_rotations", condition_column="object_id")
+            current_rotation_db = ct.query_database(table_name="Screw_Op_Parmeters", condition_value=ct.active_block.name, column_to_query="current_rotation", condition_column="object_id")
+            
+            if number_of_rotations_db > current_rotation_db:
+                # ct.screw_finished = ct.query_database(table_name="sequences", condition_value="screw", column_to_query="is_runnable_exit", condition_column="sequence_name") #Querying from the db
+                ct.screw_finished = True
+                ct.update_db_data("Screw_Op_Parmeters", "operation_status", True, "object_id", ct.active_block.name)
+                ct.update_db_data("Screw_Op_Parmeters", "current_rotation", number_of_rotations_db, "object_id", ct.active_block.name)
+                print("<Rotating block>")
+                return True
+        return False
+
+class DropRd(DfStateMachineDecider, DfRldsNode):
+    def __init__(self):
+        # This behavior uses the locking feature of the decision framework to run a state machine
+        # sequence as an atomic unit.
+        super().__init__(
+            DfStateSequence(
+                [
+                    DfSetLockState(set_locked_to=True, decider=self),
+                    DfTimedDeciderState(DfOpenGripper(), activity_duration=0.5),
+                    LiftState(command_delta_z=0.1, success_delta_z=0.03),
+                    DfWriteContextState(lambda ctx: ctx.clear_gripper()),
+                    DfWriteContextState(set_top_block_aligned),
+                    DfTimedDeciderState(DfCloseGripper(), activity_duration=0.25),
+                    DfSetLockState(set_locked_to=False, decider=self),
+                ]
+            )
+        )
+        self.is_locked = False
+
+    def is_runnable(self):
+        print("goint inside the runnable")
+        ct = self.context
+        if ct.gripper_has_block:
+            print("<dropping block>")
+            return True
+        return False
+
+    def exit(self):
+        self.context.reset_active_block()
+        self.context.placement_target_eff_T = None
 
 class PlaceBlockRd(DfStateMachineDecider, DfRldsNode):
     def __init__(self):
@@ -907,6 +1109,7 @@ class PlaceBlockRd(DfStateMachineDecider, DfRldsNode):
         self.is_locked = False
 
     def is_runnable(self):
+        print("goint inside thwe runnable")
         ct = self.context
         if ct.gripper_has_block and ct.has_placement_target_eff_T:
             eff_T = ct.robot.arm.get_fk_T()
@@ -926,32 +1129,195 @@ class PlaceBlockRd(DfStateMachineDecider, DfRldsNode):
         self.context.placement_target_eff_T = None
 
 
-def make_place_rlds():
+def make_travel_rlds():
     rlds = DfRldsDecider()
     rlds.append_rlds_node("reach_to_placement", ReachToPlacementRd())
-    rlds.append_rlds_node("place_block", PlaceBlockRd())
     return rlds
 
+def make_screw_rlds():
+    rlds = DfRldsDecider()
+    screw_rd = ScrewRd() 
+    rlds.append_rlds_node("screw_rd", screw_rd)
+    return rlds
+
+def make_drop_rlds():
+    rlds = DfRldsDecider()
+    rlds.append_rlds_node("drop_block", DropRd())
+    return rlds
+
+# class BlockPickAndPlaceDispatch(DfDecider):
+#     def __init__(self):
+#         super().__init__()
+#         self.add_child("pick", make_pick_rlds())
+#         self.add_child("travel", make_travel_rlds())
+#         self.add_child("screw", make_screw_rlds())
+#         self.add_child("drop", make_drop_rlds())
+#         self.add_child("go_home", GoHome())
+
+#     def decide(self):
+#         ct = self.context
+#         if ct.block_tower.is_complete:
+#             return DfDecision("go_home")
+
+#         if ct.is_gripper_clear:
+#             return DfDecision("pick")
+        
+#         if ct.gripper_has_block and not ct.reached_target_T:
+#             return DfDecision("travel")
+
+#         if ct.gripper_has_block and ct.reached_target_T and not ct.screw_finished:
+#             return DfDecision("screw")
+
+#         if ct.gripper_has_block and ct.reached_target_T:
+#             return DfDecision("drop")
+        
+#         return DfDecision("go_home")
 
 class BlockPickAndPlaceDispatch(DfDecider):
-    def __init__(self):
+    def __init__(self, sequence):
+        """
+        Initialize the decider network based on the provided sequence.
+
+        Args:
+            sequence: A list of task names (e.g., ["pick", "travel", "drop", "go_home"]).
+        """
         super().__init__()
-        self.add_child("pick", make_pick_rlds())
-        self.add_child("place", make_place_rlds())
-        self.add_child("go_home", GoHome())
+        self.sequence = sequence
+        self.db_manager = DatabaseManager()
+
+        # Mapping of task names to their corresponding RLD nodes.
+        self.task_map = {
+            "go_home": GoHome(),
+            "pick": make_pick_rlds(),
+            "travel": make_travel_rlds(),
+            "screw": make_screw_rlds(),
+            "drop": make_drop_rlds(),            
+        }
+
+        # Dynamically add child nodes based on the sequence.
+        for task_name in sequence:
+            if task_name in self.task_map:
+                self.add_child(task_name, self.task_map[task_name])
+            else:
+                raise ValueError(f"Task '{task_name}' is not defined in the task map.")
 
     def decide(self):
         ct = self.context
-        if ct.block_tower.is_complete:
-            return DfDecision("go_home")
+        
+        # ct.screw_finished = db_manager.query_task_info(table_name="Screw_Op_Parmeters", condition_value=ct.active_block.name, column_to_query="operation_status", condition_column="object_id")
 
-        if ct.is_gripper_clear:
-            return DfDecision("pick")
-        else:
-            return DfDecision("place")
-
+        # Define decision logic dynamically based on the sequence.
+        for task_name in self.sequence:
+            if task_name == "go_home" and ct.block_tower.is_complete:
+                return DfDecision("go_home")
+            if task_name == "pick" and ct.is_gripper_clear and not ct.block_tower.is_complete:
+                return DfDecision("pick")
+            if task_name == "travel" and ct.gripper_has_block and not ct.reached_target_T:
+                return DfDecision("travel")
+            if task_name == "screw" and ct.gripper_has_block and ct.reached_target_T and not self.db_manager.query_task_info(table_name="Screw_Op_Parmeters", condition_value=ct.active_block.name, column_to_query="operation_status", condition_column="object_id"):
+                return DfDecision("screw")
+            if task_name == "drop" and ct.gripper_has_block and ct.reached_target_T:
+                return DfDecision("drop")
+        # Default to "go_home" if no other conditions are met.
+        return DfDecision("go_home")
 
 def make_decider_network(robot):
+    # sequence = ["pick", "travel", "screw", "drop", "go_home"]
+    # sequence = ["pick", "travel", "drop", "go_home"]
+    sequence = ["pick", "travel", "drop", "go_home"]
     return DfNetwork(
-        BlockPickAndPlaceDispatch(), context=BuildTowerContext(robot, tower_position=np.array([0.25, 0.3, 0.0]))
+        BlockPickAndPlaceDispatch(sequence), context=BuildTowerContext(robot, tower_position=np.array([0.25, 0.3, 0.0]))
     )
+
+class DatabaseManager:
+    def __init__(self, db_name="/home/omniverse/.local/share/ov/pkg/isaac_sim-2023.1.1/sequences.db"):
+        self.db_name = db_name
+        self.conn = sqlite3.connect(self.db_name)
+        self.cursor = self.conn.cursor()
+        # self.initialize_database()
+
+
+    def query_task_info(self, table_name, condition_value, column_to_query, condition_column):
+        if column_to_query and condition_column:
+            query = f"SELECT {column_to_query} FROM {table_name} WHERE {condition_column} = ?"
+            self.cursor.execute(query, (condition_value,))
+            result = self.cursor.fetchone()
+            return result[0] if result else None
+        
+        elif column_to_query and not condition_column:
+            query = f"SELECT {column_to_query} FROM {table_name} ORDER BY {condition_value} ASC"
+            self.cursor.execute(query)
+            results = self.cursor.fetchall()
+            return [row[0] for row in results]
+        
+        else:
+            query = "SELECT * FROM tasks WHERE task_name = ?"
+            self.cursor.execute(query, (condition_value,))
+            row = self.cursor.fetchone()
+            columns = [desc[0] for desc in self.cursor.description]
+            return dict(zip(columns, row)) if row else None
+
+    def update_table(self, table_name, column_to_update, new_value, condition_column, condition_value):
+        """
+        Update a specific column in any table with a new value based on a condition.
+
+        Args:
+            table_name (str): The name of the table to update.
+            column_to_update (str): The column to update.
+            new_value (any): The new value to set for the column.
+            condition_column (str): The column to use for the condition.
+            condition_value (any): The value to match in the condition column.
+        """
+        query = f"""
+        UPDATE {table_name}
+        SET {column_to_update} = ?
+        WHERE {condition_column} = ?
+        """
+        self.cursor.execute(query, (new_value, condition_value))
+        self.conn.commit()
+        print(f"Updated {column_to_update} in {table_name} where {condition_column} = {condition_value} to {new_value}")
+
+    def check_table_schema(self, table_name):
+        """
+        Print the schema of a table for debugging purposes.
+
+        Args:
+            table_name (str): The name of the table to check.
+        """
+        self.cursor.execute(f"PRAGMA table_info({table_name})")
+        schema = self.cursor.fetchall()
+        print(f"Schema of {table_name}:")
+        for column in schema:
+            print(column)
+
+
+    def close(self):
+        self.conn.close()
+
+# def export_to_json(self, output_file="exported_data/database.json"):
+    #     """
+    #     Export the entire database to a JSON file.
+
+    #     Args:
+    #         output_file (str): Path to the JSON file where data will be saved.
+    #     """
+    #     data = {}
+
+    #     # Export `sequences` table
+    #     self.cursor.execute("SELECT * FROM sequences")
+    #     columns = [desc[0] for desc in self.cursor.description]
+    #     data["sequences"] = [dict(zip(columns, row)) for row in self.cursor.fetchall()]
+
+    #     # Export `tasks` table
+    #     self.cursor.execute("SELECT * FROM states")
+    #     columns = [desc[0] for desc in self.cursor.description]
+    #     data["states"] = [dict(zip(columns, row)) for row in self.cursor.fetchall()]
+
+    #     # Write to JSON file
+    #     import os
+    #     os.makedirs(os.path.dirname(output_file), exist_ok=True)  # Ensure directory exists
+    #     with open(output_file, "w") as f:
+    #         json.dump(data, f, indent=4)
+
+    #     print(f"Database exported to JSON file: {output_file}")
+    #     print("Database saved at:", os.path.abspath("sequences.db"))

@@ -9,6 +9,7 @@ from PyhtonRWS import RWPanel
 
 # computer_ip = "192.168.125.5" #For use on physical controller (need static IP on a local network)
 computer_ip = "192.168.125.204" #For use on physical controller (need static IP on a local network)--> New after nonstatic IP
+# computer_ip="192.168.125.30"
 # computer_ip= "10.245.0.242" #For simulation in robotstudio - Same as in robotstudio-configuration-communication
 robot_port=6512 # Port of ROB_R mechanical unit
 # robot_port = 6510 # Port of EGM Sensor
