@@ -1,0 +1,77 @@
+{
+    "sequences": [
+        {
+            "sequence_id": 1,
+            "sequence_name": "pick",
+            "description": "Pick up an object",
+            "conditions": "gripper is clear",
+            "post_conditions": "object in gripper",
+            "is_runnable_count": 1,
+            "is_runnable_condition": "aaa",
+            "is_runnable_exit": 0,
+            "node_name": "PickBlockRd"
+        },
+        {
+            "sequence_id": 2,
+            "sequence_name": "travel",
+            "description": "Move to the target location",
+            "conditions": "object in gripper",
+            "post_conditions": "at target location",
+            "is_runnable_count": 1,
+            "is_runnable_condition": "aaa",
+            "is_runnable_exit": 0,
+            "node_name": "ReachToPlacementRd"
+        },
+        {
+            "sequence_id": 3,
+            "sequence_name": "drop",
+            "description": "Drop the object",
+            "conditions": "at target location",
+            "post_conditions": "object dropped",
+            "is_runnable_count": 1,
+            "is_runnable_condition": "aaa",
+            "is_runnable_exit": 0,
+            "node_name": "DropRd"
+        },
+        {
+            "sequence_id": 4,
+            "sequence_name": "screw",
+            "description": "Screw the object two times",
+            "conditions": "task complete",
+            "post_conditions": "robot at home position",
+            "is_runnable_count": 1,
+            "is_runnable_condition": "thresh_met and self.context.gripper_has_block",
+            "is_runnable_exit": 1,
+            "node_name": "ScrewRd"
+        },
+        {
+            "sequence_id": 5,
+            "sequence_name": "go_home",
+            "description": "Return to the home position",
+            "conditions": "task complete",
+            "post_conditions": "robot at home position",
+            "is_runnable_count": 1,
+            "is_runnable_condition": "aaa",
+            "is_runnable_exit": 0,
+            "node_name": "GoHome"
+        }
+    ],
+    "states": [
+        {
+            "task_id": 1,
+            "task_name": "LiftState",
+            "description": "Lift an object vertically",
+            "conditions": "gripper is clear",
+            "post_conditions": "object in gripper",
+            "sequence_id": 1
+        },
+        {
+            "task_id": 2,
+            "task_name": "SlideState",
+            "description": "Slide an object along X-axis",
+            "conditions": "object in gripper",
+            "post_conditions": "at target location",
+            "sequence_id": 1
+        }
+    ]
+}
